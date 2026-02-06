@@ -12,7 +12,25 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 INSTALL_DIR="${CODEX_ORCHESTRATOR_HOME:-$HOME/.codex-orchestrator}"
-REPO_URL="https://github.com/kingbootoshi/codex-orchestrator.git"
+
+# Prefer installing the same repo that this plugin was installed from.
+# Fallback to upstream if we can't detect a git origin remote.
+DEFAULT_REPO_URL="https://github.com/kingbootoshi/codex-orchestrator.git"
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
+REPO_URL="$DEFAULT_REPO_URL"
+if command -v git &>/dev/null; then
+  if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree &>/dev/null; then
+    ORIGIN_URL="$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || true)"
+    if [ -n "$ORIGIN_URL" ]; then
+      REPO_URL="$ORIGIN_URL"
+    fi
+  fi
+fi
+
+# Allow explicit override.
+REPO_URL="${CODEX_ORCHESTRATOR_REPO_URL:-$REPO_URL}"
 
 info() { echo -e "${BLUE}[info]${NC} $1"; }
 success() { echo -e "${GREEN}[ok]${NC} $1"; }
@@ -42,6 +60,7 @@ detect_platform() {
   esac
 
   info "Platform: $PLATFORM ($(uname -m))"
+  info "Repository: $REPO_URL"
 }
 
 # -------------------------------------------------------------------
@@ -181,12 +200,44 @@ check_codex() {
 }
 
 # -------------------------------------------------------------------
+# Optional: Gemini (Vertex AI) auth (OAuth/ADC)
+# -------------------------------------------------------------------
+check_gemini_oauth() {
+  if ! command -v gcloud &>/dev/null; then
+    warn "gcloud not found (Gemini provider optional)"
+    echo "To use --provider gemini, install gcloud and run:"
+    echo "  gcloud auth application-default login"
+    echo "  gcloud config set project YOUR_PROJECT_ID"
+    return 0
+  fi
+
+  local ADC1="$HOME/.config/gcloud/application_default_credentials.json"
+  local ADC2="$HOME/Library/Application Support/gcloud/application_default_credentials.json"
+  if [ -f "$ADC1" ] || [ -f "$ADC2" ]; then
+    success "gemini oauth: ADC detected"
+  else
+    warn "gemini oauth: ADC not configured yet"
+    echo "Run:"
+    echo "  gcloud auth application-default login"
+    echo "  gcloud config set project YOUR_PROJECT_ID"
+    echo "Then (one-time) enable Vertex AI API:"
+    echo "  gcloud services enable aiplatform.googleapis.com"
+  fi
+}
+
+# -------------------------------------------------------------------
 # Install codex-orchestrator
 # -------------------------------------------------------------------
 install_orchestrator() {
   if [ -d "$INSTALL_DIR" ]; then
     info "Updating existing installation at $INSTALL_DIR"
     cd "$INSTALL_DIR"
+    # Ensure the install dir tracks the intended repo.
+    CURRENT_ORIGIN="$(git remote get-url origin 2>/dev/null || true)"
+    if [ -n "$CURRENT_ORIGIN" ] && [ "$CURRENT_ORIGIN" != "$REPO_URL" ]; then
+      info "Updating origin remote: $CURRENT_ORIGIN -> $REPO_URL"
+      git remote set-url origin "$REPO_URL"
+    fi
     git pull --ff-only origin main
   else
     info "Cloning codex-orchestrator to $INSTALL_DIR"
@@ -285,6 +336,7 @@ main() {
   check_tmux
   check_bun
   check_codex
+  check_gemini_oauth
 
   echo ""
   install_orchestrator
