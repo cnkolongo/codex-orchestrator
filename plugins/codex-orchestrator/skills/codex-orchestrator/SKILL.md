@@ -1,6 +1,6 @@
 ---
 name: codex-orchestrator
-description: DEFAULT PIPELINE for all tasks requiring execution. You (Claude) are the strategic orchestrator. Codex agents are your implementation army - hyper-focused coding specialists. Trigger on ANY task involving code, file modifications, codebase research, multi-step work, or implementation. This is NOT optional - Codex agents are the default for all execution work. Only skip if the user explicitly asks you to do something yourself.
+description: DEFAULT PIPELINE for tasks requiring execution. You (Claude) are the strategic orchestrator. Codex agents are your implementation army (code + commands) and Gemini agents are your design/UX ideation + critique partners. Trigger on ANY task involving code, file modifications, codebase research, multi-step work, or implementation. Codex is the default for execution work. Use Gemini for UI/UX exploration, A/B variants, copy, and critique.
 triggers:
   - codex-orchestrator
   - spawn codex
@@ -67,6 +67,11 @@ For ANY task involving:
 
 **Spawn Codex agents. Do not do it yourself. Do not use Claude subagents.**
 
+Gemini agents are optional and best for:
+- UI/UX ideation and A/B variant generation
+- UX critique and accessibility feedback
+- Copywriting and content hierarchy suggestions
+
 ### Rule 2: You Are the Orchestrator, Not the Implementer
 
 Your job:
@@ -99,6 +104,19 @@ Before codex-agent can run, three things must be installed:
 3. **OpenAI Codex CLI** - The coding agent being orchestrated
 
 The user must also be **authenticated with OpenAI** (`codex --login`) so agents can make API calls.
+
+### Optional: Gemini Provider
+
+Gemini provider uses **OAuth/ADC** via Vertex AI (no API keys).
+
+Setup:
+
+```bash
+gcloud auth application-default login
+gcloud config set project YOUR_PROJECT_ID
+# Optional (defaults to us-central1)
+export GOOGLE_CLOUD_LOCATION=us-central1
+```
 
 ### Quick Check
 
@@ -250,6 +268,12 @@ codex-agent start "Investigate auth flow for vulnerabilities" --map -s read-only
 
 # Implementation (defaults are perfect - xhigh reasoning, workspace-write)
 codex-agent start "Implement the auth refactor per PRD" --map
+
+# UI/UX ideation (Gemini Flash)
+codex-agent start "Generate 5 UI directions for onboarding + pros/cons" --provider gemini --model gemini-3-flash
+
+# UX critique (Gemini Pro)
+codex-agent start "Critique this UI flow for accessibility + clarity" --provider gemini --model gemini-3-pro
 
 # With file context
 codex-agent start "Review these modules" --map -f "src/auth/**/*.ts" -f "src/api/**/*.ts"

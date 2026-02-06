@@ -2,7 +2,7 @@
 
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, unlinkSync, statSync } from "fs";
 import { join } from "path";
-import { config, ReasoningEffort, SandboxMode } from "./config.ts";
+import { config, Provider, ReasoningEffort, SandboxMode } from "./config.ts";
 import { randomBytes } from "crypto";
 import { extractSessionId, findSessionFile, parseSessionFile, type ParsedSessionData } from "./session-parser.ts";
 import {
@@ -19,6 +19,7 @@ import {
 
 export interface Job {
   id: string;
+  provider: Provider;
   status: "pending" | "running" | "completed" | "failed";
   prompt: string;
   model: string;
@@ -46,6 +47,18 @@ function getJobPath(jobId: string): string {
   return join(config.jobsDir, `${jobId}.json`);
 }
 
+function normalizeProvider(value: unknown): Provider {
+  return value === "gemini" ? "gemini" : "codex";
+}
+
+function normalizeJob(raw: any): Job {
+  // Backwards compatible with older job files that didn't include `provider`.
+  return {
+    ...raw,
+    provider: normalizeProvider(raw?.provider),
+  } as Job;
+}
+
 export function saveJob(job: Job): void {
   ensureJobsDir();
   writeFileSync(getJobPath(job.id), JSON.stringify(job, null, 2));
@@ -54,7 +67,7 @@ export function saveJob(job: Job): void {
 export function loadJob(jobId: string): Job | null {
   try {
     const content = readFileSync(getJobPath(jobId), "utf-8");
-    return JSON.parse(content);
+    return normalizeJob(JSON.parse(content));
   } catch {
     return null;
   }
@@ -67,7 +80,7 @@ export function listJobs(): Job[] {
     .map((f) => {
       try {
         const content = readFileSync(join(config.jobsDir, f), "utf-8");
-        return JSON.parse(content) as Job;
+        return normalizeJob(JSON.parse(content));
       } catch {
         return null;
       }
@@ -140,6 +153,7 @@ function loadSessionData(jobId: string): ParsedSessionData | null {
 
 export type JobsJsonEntry = {
   id: string;
+  provider: Provider;
   status: Job["status"];
   prompt: string;
   model: string;
@@ -181,6 +195,7 @@ export function getJobsJson(): JobsJsonOutput {
 
     return {
       id: effective.id,
+      provider: effective.provider,
       status: effective.status,
       prompt: truncateText(effective.prompt, 100),
       model: effective.model,
@@ -212,12 +227,21 @@ export function deleteJob(jobId: string): boolean {
 
   try {
     unlinkSync(getJobPath(jobId));
+
     // Clean up prompt file if exists
     try {
       unlinkSync(join(config.jobsDir, `${jobId}.prompt`));
     } catch {
       // Prompt file may not exist
     }
+
+    // Clean up log file if exists
+    try {
+      unlinkSync(join(config.jobsDir, `${jobId}.log`));
+    } catch {
+      // Log file may not exist
+    }
+
     return true;
   } catch {
     return false;
@@ -226,6 +250,7 @@ export function deleteJob(jobId: string): boolean {
 
 export interface StartJobOptions {
   prompt: string;
+  provider?: Provider;
   model?: string;
   reasoningEffort?: ReasoningEffort;
   sandbox?: SandboxMode;
@@ -239,11 +264,14 @@ export function startJob(options: StartJobOptions): Job {
   const jobId = generateJobId();
   const cwd = options.cwd || process.cwd();
 
+  const provider = options.provider ?? config.defaultProvider;
+
   const job: Job = {
     id: jobId,
+    provider,
     status: "pending",
     prompt: options.prompt,
-    model: options.model || config.model,
+    model: options.model || (provider === "gemini" ? config.geminiModel : config.codexModel),
     reasoningEffort: options.reasoningEffort || config.defaultReasoningEffort,
     sandbox: options.sandbox || config.defaultSandbox,
     parentSessionId: options.parentSessionId,
@@ -253,9 +281,10 @@ export function startJob(options: StartJobOptions): Job {
 
   saveJob(job);
 
-  // Create tmux session with codex
+  // Create tmux session with the selected provider
   const result = createSession({
     jobId,
+    provider: job.provider,
     prompt: options.prompt,
     model: job.model,
     reasoningEffort: job.reasoningEffort,

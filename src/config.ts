@@ -1,8 +1,14 @@
 // Configuration for codex-agent
 
 export const config = {
-  // Default model
-  model: "gpt-5.3-codex",
+  // Providers
+  providers: ["codex", "gemini"] as const,
+  defaultProvider: "codex" as const,
+
+  // Default models per provider
+  codexModel: "gpt-5.3-codex",
+  // Note: model names change over time; override via --model as needed.
+  geminiModel: "gemini-3-pro",
 
   // Reasoning effort levels
   reasoningEfforts: ["low", "medium", "high", "xhigh"] as const,
@@ -27,3 +33,4 @@ export const config = {
 
 export type ReasoningEffort = typeof config.reasoningEfforts[number];
 export type SandboxMode = typeof config.sandboxModes[number];
+export type Provider = typeof config.providers[number];

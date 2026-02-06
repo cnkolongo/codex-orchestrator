@@ -7,6 +7,7 @@ A Claude Code plugin that lets Claude orchestrate OpenAI Codex agents. Claude ha
 When installed, Claude gains the ability to:
 
 - **Spawn Codex agents** for research, implementation, review, and testing
+- **Spawn Gemini agents** for UI/UX ideation, critique, and A/B variant generation
 - **Monitor agent progress** via structured JSON output
 - **Redirect agents mid-task** when they need course correction
 - **Synthesize findings** from multiple parallel agents into clear results
@@ -109,6 +110,9 @@ The plugin uses the `codex-agent` CLI under the hood:
 
 ```bash
 codex-agent start "task" -r high --map -s read-only   # spawn
+gcloud auth application-default login
+gcloud config set project YOUR_PROJECT_ID
+codex-agent start "Critique this UI flow" --provider gemini --model gemini-3-pro
 codex-agent jobs --json                                # monitor
 codex-agent capture <id>                               # check output
 codex-agent send <id> "new instructions"               # redirect

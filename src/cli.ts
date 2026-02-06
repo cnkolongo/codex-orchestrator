@@ -3,7 +3,7 @@
 // Codex Agent CLI - Delegate tasks to GPT Codex agents with tmux integration
 // Designed for Claude Code orchestration with bidirectional communication
 
-import { config, ReasoningEffort, SandboxMode } from "./config.ts";
+import { config, Provider, ReasoningEffort, SandboxMode } from "./config.ts";
 import {
   startJob,
   loadJob,
@@ -20,6 +20,8 @@ import {
   Job,
   getJobsJson,
 } from "./jobs.ts";
+import { spawnSync } from "child_process";
+import { existsSync } from "fs";
 import { loadFiles, formatPromptWithFiles, estimateTokens, loadCodebaseMap } from "./files.ts";
 import { isTmuxAvailable, listSessions } from "./tmux.ts";
 
@@ -38,11 +40,13 @@ Usage:
   codex-agent sessions                   List active tmux sessions
   codex-agent kill <jobId>               Kill running job
   codex-agent clean                      Clean old completed jobs
+  codex-agent delete <jobId>             Delete job and local artifacts
   codex-agent health                     Check tmux and codex availability
 
 Options:
+  --provider <name>         Provider: codex, gemini (default: codex)
   -r, --reasoning <level>    Reasoning effort: low, medium, high, xhigh (default: xhigh)
-  -m, --model <model>        Model name (default: gpt-5.3-codex)
+  -m, --model <model>        Model name (provider-specific default)
   -s, --sandbox <mode>       Sandbox: read-only, workspace-write, danger-full-access
   -f, --file <glob>          Include files matching glob (can repeat)
   -d, --dir <path>           Working directory (default: cwd)
@@ -58,6 +62,11 @@ Options:
 Examples:
   # Start an agent
   codex-agent start "Review this code for security issues" -f "src/**/*.ts"
+
+  # Start a Gemini agent (UI/UX ideation, critique)
+  gcloud auth application-default login
+  gcloud config set project YOUR_PROJECT_ID
+  codex-agent start "Propose 5 UI variants for onboarding" --provider gemini --model gemini-3-flash
 
   # Check on it
   codex-agent capture abc123
@@ -79,6 +88,7 @@ Bidirectional Communication:
 `;
 
 interface Options {
+  provider: Provider;
   reasoning: ReasoningEffort;
   model: string;
   sandbox: SandboxMode;
@@ -111,8 +121,9 @@ function parseArgs(args: string[]): {
   options: Options;
 } {
   const options: Options = {
+    provider: config.defaultProvider,
     reasoning: config.defaultReasoningEffort,
-    model: config.model,
+    model: config.codexModel,
     sandbox: config.defaultSandbox,
     files: [],
     dir: process.cwd(),
@@ -128,12 +139,28 @@ function parseArgs(args: string[]): {
   const positional: string[] = [];
   let command = "";
 
+  let providerExplicit = false;
+  let modelExplicit = false;
+
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
 
     if (arg === "-h" || arg === "--help") {
       console.log(HELP);
       process.exit(0);
+    } else if (arg === "--provider") {
+      const provider = args[++i];
+      if (!provider) {
+        console.error("Error: --provider requires a value (codex|gemini)");
+        process.exit(1);
+      }
+      if (!config.providers.includes(provider as Provider)) {
+        console.error(`Invalid provider: ${provider}`);
+        console.error(`Valid options: ${config.providers.join(", ")}`);
+        process.exit(1);
+      }
+      options.provider = provider as Provider;
+      providerExplicit = true;
     } else if (arg === "-r" || arg === "--reasoning") {
       const level = args[++i] as ReasoningEffort;
       if (config.reasoningEfforts.includes(level)) {
@@ -145,6 +172,7 @@ function parseArgs(args: string[]): {
       }
     } else if (arg === "-m" || arg === "--model") {
       options.model = args[++i];
+      modelExplicit = true;
     } else if (arg === "-s" || arg === "--sandbox") {
       const mode = args[++i] as SandboxMode;
       if (config.sandboxModes.includes(mode)) {
@@ -187,7 +215,47 @@ function parseArgs(args: string[]): {
     }
   }
 
+  // Infer provider from model if provider not explicitly set.
+  if (!providerExplicit) {
+    if (options.model.startsWith("gemini-") || options.model.startsWith("models/gemini-")) {
+      options.provider = "gemini";
+    } else {
+      options.provider = "codex";
+    }
+  }
+
+  // If provider explicitly set but model not, use provider default model.
+  if (providerExplicit && !modelExplicit) {
+    options.model = options.provider === "gemini" ? config.geminiModel : config.codexModel;
+  }
+
+  // If provider inferred to gemini and no model explicitly passed, pick gemini default.
+  if (!providerExplicit && options.provider === "gemini" && !modelExplicit) {
+    options.model = config.geminiModel;
+  }
+
   return { command, positional, options };
+}
+
+function hasGeminiAuth(): boolean {
+  // OAuth/ADC only: prefer gcloud application-default login or GOOGLE_APPLICATION_CREDENTIALS.
+  const gac = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  if (gac && existsSync(gac)) return true;
+
+  const home = process.env.HOME;
+  if (!home) return false;
+
+  const candidates = [
+    `${home}/.config/gcloud/application_default_credentials.json`,
+    `${home}/Library/Application Support/gcloud/application_default_credentials.json`,
+  ];
+
+  return candidates.some((p) => existsSync(p));
+}
+
+function hasCodexCli(): boolean {
+  const res = spawnSync("codex", ["--version"], { stdio: "ignore" });
+  return res.status === 0 && !res.error;
 }
 
 function formatDuration(ms: number): string {
@@ -213,9 +281,10 @@ function formatJobStatus(job: Job): string {
     : "-";
 
   const status = job.status.toUpperCase().padEnd(10);
+  const provider = job.provider.toUpperCase().padEnd(7);
   const promptPreview = job.prompt.slice(0, 50) + (job.prompt.length > 50 ? "..." : "");
 
-  return `${job.id}  ${status}  ${elapsed.padEnd(8)}  ${job.reasoningEffort.padEnd(6)}  ${promptPreview}`;
+  return `${job.id}  ${status}  ${provider}  ${elapsed.padEnd(8)}  ${job.reasoningEffort.padEnd(6)}  ${promptPreview}`;
 }
 
 function refreshJobsForDisplay(jobs: Job[]): Job[] {
@@ -267,15 +336,25 @@ async function main() {
         }
         console.log("tmux: OK");
 
-        // Check codex
-        const { execSync } = await import("child_process");
-        try {
-          const version = execSync("codex --version", { encoding: "utf-8" }).trim();
-          console.log(`codex: ${version}`);
-        } catch {
-          console.error("codex CLI not found");
-          console.error("Install with: npm install -g @openai/codex");
-          process.exit(1);
+        if (options.provider === "codex") {
+          // Check codex
+          const { execSync } = await import("child_process");
+          try {
+            const version = execSync("codex --version", { encoding: "utf-8" }).trim();
+            console.log(`codex: ${version}`);
+          } catch {
+            console.error("codex CLI not found");
+            console.error("Install with: npm install -g @openai/codex");
+            process.exit(1);
+          }
+        } else if (options.provider === "gemini") {
+          if (!hasGeminiAuth()) {
+            console.error("Gemini OAuth (ADC) not configured");
+            console.error("Run: gcloud auth application-default login");
+            console.error("Then set project: gcloud config set project <PROJECT_ID> (or export GOOGLE_CLOUD_PROJECT)");
+            process.exit(1);
+          }
+          console.log("gemini: OK (ADC detected)");
         }
 
         console.log("Status: Ready");
@@ -292,6 +371,19 @@ async function main() {
         if (!isTmuxAvailable()) {
           console.error("Error: tmux is required but not installed");
           console.error("Install with: brew install tmux");
+          process.exit(1);
+        }
+
+        if (options.provider === "codex" && !hasCodexCli()) {
+          console.error("Error: Codex provider selected but codex CLI was not found.");
+          console.error("Install with: npm install -g @openai/codex");
+          process.exit(1);
+        }
+
+        if (options.provider === "gemini" && !hasGeminiAuth()) {
+          console.error("Error: Gemini provider selected but OAuth/ADC was not found.");
+          console.error("Run: gcloud auth application-default login");
+          console.error("Then set project: gcloud config set project <PROJECT_ID> (or export GOOGLE_CLOUD_PROJECT)");
           process.exit(1);
         }
 
@@ -331,6 +423,7 @@ async function main() {
 
         const job = startJob({
           prompt,
+          provider: options.provider,
           model: options.model,
           reasoningEffort: options.reasoning,
           sandbox: options.sandbox,
@@ -339,6 +432,7 @@ async function main() {
         });
 
         console.log(`Job started: ${job.id}`);
+        console.log(`Provider: ${job.provider}`);
         console.log(`Model: ${job.model} (${job.reasoningEffort})`);
         console.log(`Working dir: ${job.cwd}`);
         console.log(`tmux session: ${job.tmuxSession}`);
@@ -364,6 +458,7 @@ async function main() {
 
         console.log(`Job: ${job.id}`);
         console.log(`Status: ${job.status}`);
+        console.log(`Provider: ${job.provider}`);
         console.log(`Model: ${job.model} (${job.reasoningEffort})`);
         console.log(`Sandbox: ${job.sandbox}`);
         console.log(`Created: ${job.createdAt}`);
@@ -534,8 +629,8 @@ async function main() {
         if (jobs.length === 0) {
           console.log("No jobs");
         } else {
-          console.log("ID        STATUS      ELAPSED   EFFORT  PROMPT");
-          console.log("-".repeat(80));
+          console.log("ID        STATUS      PROVIDER  ELAPSED   EFFORT  PROMPT");
+          console.log("-".repeat(100));
           for (const job of jobs) {
             console.log(formatJobStatus(job));
           }
@@ -606,6 +701,19 @@ async function main() {
             process.exit(1);
           }
 
+          if (options.provider === "codex" && !hasCodexCli()) {
+            console.error("Error: Codex provider selected but codex CLI was not found.");
+            console.error("Install with: npm install -g @openai/codex");
+            process.exit(1);
+          }
+
+          if (options.provider === "gemini" && !hasGeminiAuth()) {
+            console.error("Error: Gemini provider selected but OAuth/ADC was not found.");
+            console.error("Run: gcloud auth application-default login");
+            console.error("Then set project: gcloud config set project <PROJECT_ID> (or export GOOGLE_CLOUD_PROJECT)");
+            process.exit(1);
+          }
+
           const prompt = [command, ...positional].join(" ");
 
           if (options.dryRun) {
@@ -616,6 +724,7 @@ async function main() {
 
           const job = startJob({
             prompt,
+            provider: options.provider,
             model: options.model,
             reasoningEffort: options.reasoning,
             sandbox: options.sandbox,
@@ -624,6 +733,7 @@ async function main() {
           });
 
           console.log(`Job started: ${job.id}`);
+          console.log(`Provider: ${job.provider}`);
           console.log(`tmux session: ${job.tmuxSession}`);
           console.log(`Attach: tmux attach -t ${job.tmuxSession}`);
         } else {

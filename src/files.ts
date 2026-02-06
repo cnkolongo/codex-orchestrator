@@ -13,8 +13,8 @@ export async function loadFiles(
   patterns: string[],
   baseDir: string = process.cwd()
 ): Promise<FileContent[]> {
-  const files: FileContent[] = [];
-  const seen = new Set<string>();
+  // NOTE: Patterns are applied in order; negations ("!foo") remove previously included files.
+  const filesByAbsPath = new Map<string, FileContent>();
 
   for (const pattern of patterns) {
     // Handle negation patterns
@@ -22,7 +22,7 @@ export async function loadFiles(
       const negPattern = pattern.slice(1);
       const matches = await glob(negPattern, { cwd: baseDir, absolute: true });
       for (const match of matches) {
-        seen.delete(match);
+        filesByAbsPath.delete(match);
       }
       continue;
     }
@@ -30,7 +30,7 @@ export async function loadFiles(
     const matches = await glob(pattern, { cwd: baseDir, absolute: true });
 
     for (const match of matches) {
-      if (seen.has(match)) continue;
+      if (filesByAbsPath.has(match)) continue;
 
       try {
         const stat = statSync(match);
@@ -44,8 +44,7 @@ export async function loadFiles(
         // Skip binary content
         if (content.includes("\0")) continue;
 
-        seen.add(match);
-        files.push({
+        filesByAbsPath.set(match, {
           path: relative(baseDir, match),
           content,
         });
@@ -55,7 +54,7 @@ export async function loadFiles(
     }
   }
 
-  return files;
+  return Array.from(filesByAbsPath.values());
 }
 
 export function estimateTokens(text: string): number {

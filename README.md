@@ -8,6 +8,8 @@ Delegate tasks to OpenAI Codex agents via tmux sessions. Designed for Claude Cod
 
 Spawn parallel coding agents, monitor their progress, send follow-up messages mid-task, and capture results - all from Claude Code or the command line.
 
+Also supports spawning **Gemini chat agents** for UI/UX ideation, critique, and A/B variant generation (alongside Codex execution agents).
+
 ## Installation
 
 ### As a Claude Code Plugin (Recommended)
@@ -71,6 +73,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/kingbootoshi/codex-orchestra
 | [Bun](https://bun.sh) | JavaScript runtime - runs the CLI | `curl -fsSL https://bun.sh/install \| bash` |
 | [Codex CLI](https://github.com/openai/codex) | OpenAI's coding agent - the thing being orchestrated | `npm install -g @openai/codex` |
 | OpenAI account | API access for Codex agents | `codex --login` |
+| Google OAuth (optional) | Spawn Gemini agents via Vertex AI | `gcloud auth application-default login` |
 
 **Platform support:** macOS and Linux. Windows users should use WSL.
 
@@ -107,6 +110,11 @@ This creates `docs/CODEBASE_MAP.md`. After that, every `codex-agent start ... --
 # Start an agent
 codex-agent start "Review this codebase for security vulnerabilities" --map
 
+# Start a Gemini agent (UI/UX ideation, critique, A/B variants)
+gcloud auth application-default login
+gcloud config set project YOUR_PROJECT_ID
+codex-agent start "Propose 5 UI directions for the onboarding screen" --provider gemini --model gemini-3-flash
+
 # Check status with structured JSON
 codex-agent jobs --json
 
@@ -133,14 +141,16 @@ codex-agent send <jobId> "Focus on the authentication module instead"
 | `sessions` | List active tmux sessions |
 | `kill <id>` | Terminate a running job (last resort) |
 | `clean` | Remove jobs older than 7 days |
+| `delete <id>` | Delete a specific job and local artifacts |
 | `health` | Check tmux and codex availability |
 
 ## Options
 
 | Option | Description |
 |--------|-------------|
+| `--provider <name>` | Provider: `codex` (default) or `gemini` |
 | `-r, --reasoning <level>` | Reasoning effort: `low`, `medium`, `high`, `xhigh` |
-| `-m, --model <model>` | Model name (default: gpt-5.3-codex) |
+| `-m, --model <model>` | Model name (provider-specific default) |
 | `-s, --sandbox <mode>` | `read-only`, `workspace-write`, `danger-full-access` |
 | `-f, --file <glob>` | Include files matching glob (repeatable) |
 | `-d, --dir <path>` | Working directory |
@@ -156,6 +166,7 @@ Get structured job data with `jobs --json`:
 ```json
 {
   "id": "8abfab85",
+  "provider": "codex",
   "status": "completed",
   "elapsed_ms": 14897,
   "tokens": {
